@@ -1,10 +1,17 @@
 from collections import deque
+from utils.geometry import Rect
 from typing import *
 
 
-def get_connect_components(adj_lists: Dict[int, List[int]]) -> List[Set[int]]:
-    # имеем списки смежности, помещенные в словарь; ключ -- вершина, значение -- список смежных с ней вершин
-    # возвращает список всех компонент связности в данном графе
+def get_connect_components(adj_lists: Dict[Any, List[Any]]) -> List[Set[Any]]:
+    """
+    Имеем списки смежности, помещенные в словарь; ключ -- вершина, значение -- список смежных с ней вершин
+    возвращает список всех компонент связности в данном графе
+
+    :param adj_lists: множество списков смежности
+    :return: список компонент связности в графе
+    """
+
     visited = set()
     comps = []
 
@@ -65,3 +72,37 @@ def unite(components: List[Set[int]], to_unite: List[Tuple[int, int]]) -> List[S
     # наконец-то объединяем множества пикселов; индексы объединяемых множеств содержатся в supercomponents
     # множества const_comp оставляем неизменными и просто добавляем в ответ
 
+
+def find_max_by_order(s: Set[Tuple[int, int]], axis: int, order_function: Callable[[int, int], bool]) -> int:
+    # order_function(a, b) == True => a -- max по отношению порядка order_function
+    res = None
+    for point in s:
+        if isinstance(res, type(None)):
+            res = point[axis]
+            continue
+
+        t = point[axis]
+        if order_function(t, res):
+            res = t
+
+    return res
+
+
+def postprocess_segmentation(results: List[Any], criterion: Callable[[Any, Any], bool]) -> List[Any]:
+    while True:
+        changed = False
+        i = 0
+        while i < len(results):
+            j = i + 1
+            while j < len(results):
+                if criterion(results[i], results[j]):
+                    results[i] = results[i].union(results[j])
+                    results.pop(j)
+                    changed = True
+                else:
+                    j += 1
+            i += 1
+
+        if not changed:
+            break
+    return results

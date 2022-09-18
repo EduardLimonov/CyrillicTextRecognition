@@ -66,6 +66,9 @@ class PicHandler:
 
             self.img = t
 
+    def get_image(self) -> np.ndarray:
+        return self.img
+
     @staticmethod
     def make_black_and_white(img: np.ndarray) -> np.ndarray:
         # возвращает черно-белое изображение, соответствующее цветному img
@@ -85,7 +88,7 @@ class PicHandler:
         elif filter_type == MEDIAN_FILTER:
             self.img = apply_median(self.img, filter_size)
 
-    def apply_fixed_bin_filter(self, thresh: int = 220) -> None:
+    def apply_global_bin_filter(self, thresh: int = 220) -> None:
         # во все пикселы, значения которых больше порога thresh, устанавливаются значения 255
         # во все остальные -- 0
         mask = self.img >= thresh
@@ -126,7 +129,7 @@ class PicHandler:
         return res
 
     def make_zero_one(self) -> np.ndarray:
-        # возвращает матрицу для бинаризованного изображения: 1, если пиксел не закрашен, иначе 0
+        # возвращает матрицу для бинарного изображения: 1, если пиксел не закрашен, иначе 0
         # Не вызывайте этот метод, если изображение не бинаризовано
         return (self.img == 0).astype(np.uint8)
 
@@ -145,8 +148,20 @@ class PicHandler:
             for x_dyn in range(left, right):
                 self.img[y_static, x_dyn] = color
 
+    def __rebin(self) -> None:
+        self.apply_global_bin_filter()
+
     def resize(self, shape: Tuple[int, int]) -> None:
         self.img = resize(self.img, shape, preserve_range=True)
+        self.__rebin()
+
+    def rescale(self, scale: float) -> None:
+        self.img = rescale(self.img, scale)
+        self.__rebin()
+
+    def exec_pipeline(self, pipeline: Callable, make_copy: bool=False, **params) -> PicHandler:
+        pipeline(self, **params)
+        return self
 
 
 if __name__ == '__main__':

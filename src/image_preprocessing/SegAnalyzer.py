@@ -1,112 +1,154 @@
 from __future__ import annotations
 from typing import *
 import numpy as np
-from utils.geometry import Rect, Point, len_of_intersection
+from utils.geometry import Rect, Point
+from utils.algs import postprocess_segmentation
+
+MIN_LINE_DIST = 'MIN_LINE_DIST'  # минимальный межстрочный интервал в пикселах
+MIN_LINE_HEIGHT = 'MIN_LINE_HEIGHT'
+MIN_WORDS_DIST = 'MIN_WORDS_DIST'
+MIN_HOR_SUM = 'MIN_HOR_SUM'
+MIN_VERT_SUM = 'MIN_VERT_SUM'
+
+DEFAULT_PARAMS = {
+    MIN_LINE_DIST: 1,
+    MIN_LINE_HEIGHT: 12,
+    MIN_WORDS_DIST: 8,
+    MIN_HOR_SUM: 10,
+    MIN_VERT_SUM: 3
+}
 
 
 class SegAnalyzer:
-    # Экземпляру этого класса нужно скормить бинаризованный документ (1 -- пиксел закрашен, 0 -- незакрашен).
-    # Потом этот экземпляр будет указывать точнее, следует ли объединять две компоненты связности в одну, или нет
+    # Экземпляру этого класса нужно скормить бинарный документ (1 -- пиксел закрашен, 0 -- незакрашен).
+    # Объект определяет расположение строк и слов (на основе подсчитанных сумм пикселей по горизонтали и вертикали)
 
     strings_on_doc: List[Tuple[int, int]]  # для каждой строки текста: y-координата начала и конца
     words_in_strings: List[List[Tuple[int, int]]]  # начало и конец слова в каждой строке
+    img: np.ndarray
+    params: Dict
 
-    TEXT_THRESH = 0.2  # порог количества закрашенных пикселов в строке (доля от пикового значения в строке)
-    WORDS_HORIZ_THRESH = 0.02 #0.1
-    MIN_LINE_DIST = 5  # минимальный межстрочный интервал в пикселах
-    MIN_LINE_HEIGHT = 8
-    MIN_WORDS_DIST = 10
     DIACRITICS_PROP = 0.1  # максимальная высота диакритического знака относительно высоты символа
-    MAX_LINE_H = 30
     MIN_OUTSTR_DIST = 5
     MAX_OUTSTR_PROP = 1.8
 
-    def __init__(self, doc: np.ndarray):
-        self.strings_on_doc = []
-        self._analyze(doc)
+    def __init__(self, doc: np.ndarray, params: Dict = None):
+        if params is None:
+            params = DEFAULT_PARAMS
+        self.img = doc
+        self.params = params
+        self._analyze()
 
     @staticmethod
-    def find_peaks_ids(arr: np.ndarray, thresh: float) -> List[int]:
-        mb = arr >= thresh
+    def find_areas(sums: np.ndarray, thresh: float, min_val: int) -> List[Tuple[int, int]]:
+        """
+        Находит области строк или слов в строке
 
-        def is_peak(i) -> bool:
-            if i == 0 or i == len(arr) - 1:
-                return False
-            return mb[i] and arr[i - 1] <= arr[i] and arr[i] >= arr[i + 1]
+        :param min_val: число, значение сумм больше которого означает, что в данной позиции находится локальный максимум
+        :param sums: массив сумм закрашенных пикселей
+        :param thresh: критерий определения края зоны
+        :return: множество областей локальных максимумов, выделенных в sums
+        """
 
-        return [i for i in range(len(arr)) if is_peak(i)]
+        res = []
+        start = None
+        line_beg = False
+        thresh = thresh * np.mean(sums)
 
-    @staticmethod
-    def find_border_idx(arr: np.ndarray, peak_idx, next_idx: Callable[int, int], thresh: float) -> int:
-        # находит границы строки текста (надстрочная часть символа не входит в строку по критерию thresh);
-        # изменение индекса определяется функцией next_idx
-        thresh_val = arr[peak_idx] * thresh  # порог суммы, ниже которого строка пикселов считается пустой строкой между
-        # строк текста
-        idx = peak_idx
-        while idx < len(arr) and arr[idx] >= thresh_val and 0 < idx < len(arr):
-            idx = next_idx(idx)
+        for l in range(len(sums)):
+            if sums[l] > thresh or sums[l] > min_val:
+                if not line_beg:
+                    line_beg = True
+                    start = l
+            else:
+                if line_beg:
+                    line_beg = False
+                    res.append((start, l))
 
-        return idx
+        if line_beg:
+            res.append((start, len(sums) - 1))
+        return res
 
-    def _analyze(self, doc: np.ndarray) -> None:
+    def _analyze(self) -> None:
         # заполняет список строк self.strings_on_doc
+        doc = self.img
+        params = self.params
         sums = doc.sum(axis=1)  # построчные суммы; в тех строках пикселов, где большие суммы, идет строка
-
-        peaks_ids = SegAnalyzer.find_peaks_ids(sums, thresh=sums.max() * 0.1)
-        for peak_idx in peaks_ids:
-            border_low = SegAnalyzer.find_border_idx(sums, peak_idx, lambda i: i - 1, SegAnalyzer.TEXT_THRESH)
-            border_up = SegAnalyzer.find_border_idx(sums, peak_idx, lambda i: i + 1, SegAnalyzer.TEXT_THRESH)
-
-            self.strings_on_doc.append((border_low, border_up))
-
-        self._unite_lines()
+        self.strings_on_doc = SegAnalyzer.find_areas(sums, thresh=0.01, min_val=params[MIN_HOR_SUM])
+        SegAnalyzer._unite_lines(self.strings_on_doc, params)
 
         self.words_in_strings = []
-        self._find_words(doc)
 
-    def _find_words(self, doc: np.ndarray) -> None:
-        # для каждой строки (линии со словами) определяет, где проходят вертикальные границы между словами
         for top, bot in self.strings_on_doc:
             string: np.ndarray = doc[top: bot]
             vert_sums = string.sum(axis=0)
 
-            peaks_ids = SegAnalyzer.find_peaks_ids(vert_sums, vert_sums.max() * 0.2)
-            words_in_string = []
-            for peak_idx in peaks_ids:
-                border_left = SegAnalyzer.find_border_idx(vert_sums, peak_idx, lambda i: i - 1,
-                                                          SegAnalyzer.WORDS_HORIZ_THRESH)
-                border_right = SegAnalyzer.find_border_idx(vert_sums, peak_idx, lambda i: i + 1,
-                                                           SegAnalyzer.WORDS_HORIZ_THRESH)
-                words_in_string.append((border_left, border_right))
+            words = SegAnalyzer.find_areas(vert_sums, thresh=0.01, min_val=params[MIN_VERT_SUM])
 
-            res = []
-            for w in words_in_string:
-                if w not in res:
-                    res.append(w)
-
-            SegAnalyzer._unite_words(res)
-            self.words_in_strings.append(res)
+            SegAnalyzer._unite_words(words, params, bot - top)
+            self.words_in_strings.append(words)
 
     @staticmethod
-    def _unite_words(words_in_string: List[Tuple[int, int]]) -> None:
-        # если мы нечаянно выделили слишном малые интервалы между словами (разделили одно слово)
+    def _unite_pseudo_words(words: List[Rect], params: Dict) -> None:
         while True:
             changed = False
 
             i = 0
-            while i < len(words_in_string):
+            while i < len(words):
                 j = i + 1
-                while j < len(words_in_string):
-                    si = words_in_string[i]
-                    sj = words_in_string[j]
+                while j < len(words):
+                    ti = words[i]
+                    tj = words[j]
 
-                    ti = Rect(Point(si[0], 0), Point(si[1], 2))
-                    tj = Rect(Point(sj[0], 0), Point(sj[1], 2))
-
-                    if Rect.distance(ti, tj) <= SegAnalyzer.MIN_WORDS_DIST:
+                    if SegAnalyzer.unite_segments(ti, tj, params[MIN_WORDS_DIST], words):
+                        # Rect.distance(ti, tj) <= params[MIN_WORDS_DIST]:
                         # объединяем области
-                        words_in_string.pop(j)
-                        words_in_string[i] = si[0], sj[1]
+                        words[i] = words[i].union(words[j])
+                        words.pop(j)
+                        changed = True
+
+                    else:
+                        j += 1
+
+                i += 1
+
+            if not changed:
+                return
+
+    @staticmethod
+    def _unite_words(words_in_string: List[Tuple[int, int]], params: Dict, line_h: int,
+                     rects_in_line: Optional[List[Rect]] = None) -> None:
+        # если мы нечаянно выделили слишком малые интервалы между словами (разделили одно слово)
+        unite_rects = not (rects_in_line is None)
+
+        if not unite_rects:
+            rects_in_line = [Rect(Point(l, 0), Point(r, line_h)) for l, r in words_in_string]
+
+        SegAnalyzer._unite_pseudo_words(rects_in_line, params)
+
+        if unite_rects:
+            return
+        else:
+            words_in_string.clear()
+            for r in rects_in_line:
+                words_in_string.append((r.left(), r.right()))
+
+    @staticmethod
+    def _unite_lines(strings_on_doc: List[Tuple[int, int]], params: Dict):
+        # если мы нечаянно выделили слишком маленькие строки или слишком малые интервалы
+        while True:
+            changed = False
+
+            i = 0
+            while i < len(strings_on_doc):
+                j = i + 1
+                while j < len(strings_on_doc):
+                    si = strings_on_doc[i]
+                    sj = strings_on_doc[j]
+                    if si[1] - si[0] < params[MIN_LINE_HEIGHT] or sj[0] - si[1] < params[MIN_LINE_DIST]:
+                        # объединяем области
+                        strings_on_doc.pop(j)
+                        strings_on_doc[i] = si[0], sj[1]
                         changed = True
                     else:
                         break
@@ -116,148 +158,135 @@ class SegAnalyzer:
             if not changed:
                 return
 
-    def _unite_lines(self):
-        # если мы нечаянно выделили слишном маленькие строки или слишком малые интервалы
-        while True:
-            changed = False
-
-            i = 0
-            while i < len(self.strings_on_doc):
-                j = i + 1
-                while j < len(self.strings_on_doc):
-                    si = self.strings_on_doc[i]
-                    sj = self.strings_on_doc[j]
-                    if si[1] - si[0] < SegAnalyzer.MIN_LINE_HEIGHT or sj[0] - si[1] < SegAnalyzer.MIN_LINE_DIST:
-                        # объединяем области
-                        self.strings_on_doc.pop(j)
-                        self.strings_on_doc[i] = si[0], sj[1]
-                        changed = True
-                    else:
-                        break
-
-                i += 1
-
-            if not changed:
-                return
-
-
-    def unite_segments(self, a: Rect, b: Rect) -> bool:
+    @staticmethod
+    def unite_segments(a: Rect, b: Rect, sens: float, words: List[Rect]) -> bool:
         # следует ли объединять два фрагмента a, b в один (слитны ли они)
-        if self.diacritic_check(a, b):
-            # один из блоков является диакритическим знаком какой-то буквы другого блока
+        if SegAnalyzer._is_diacritic(a, b, sens * 3) or SegAnalyzer._is_diacritic(b, a, sens * 3):
             return True
-        elif self.out_of_line_check(a, b):
-            # один из блоков является надстрочным или подстрочным фрагментом для символа из другого
+        elif SegAnalyzer.is_punctuation(a, b) or SegAnalyzer.is_punctuation(b, a):
+            return False
+        elif Rect.distance(a, b) <= sens:
+            # фрагменты близко находятся
             return True
-        elif self.in_the_same_line(a, b) and self.are_near_words(a, b):
-            # оба блока находятся в одной линии; между ними нет слова
-            return True
+        else:
+            wa, wb = SegAnalyzer.find_word(words, a), SegAnalyzer.find_word(words, b)
+            if wa == wb and wa != -1:
+                return True
 
         return False
 
-    def diacritic_check(self, a: Rect, b: Rect) -> bool:
-        # один из блоков является диакритическим знаком для какого-то символа из другого блока
-        if not a.intersects_x(b):
-            return False
-
-        a_is_diacr = a.area() < b.area()  # a -- диакритический знак (иначе b)
-        diacr, word = (a, b) if a_is_diacr else (b, a)
-
-        line_of_diacr = self.find_line(diacr)
-        if line_of_diacr == -1:
-            # word не лежит ни в какой строке => это не слово, а фигня какая-то!
-            return False
-
-        # смотрим отношение высот диакритического знака и слова
-        if diacr.h() / word.h() <= SegAnalyzer.DIACRITICS_PROP and diacr.is_on_top(word) and \
-                self.is_above_line(line_of_diacr, diacr):
-            # выполнено соотношение для высот; диакритика полностью над словом; диакритика лежит над линией
-            return True
-        else:
-            return False
-
-    def out_of_line_check(self, a: Rect, b: Rect) -> bool:
-        line_of_a, line_of_b = self.find_line(a), self.find_line(b)
-        if line_of_a == -1 and line_of_b == -1 or not a.intersects_x(b):
-            # фигня какая-то, ни a, ни b не стоит ни в какой строке
-            return False
-
-        def is_outstr(a: Rect, b: Rect, line_of_b: int) -> bool:
-            # а -- надстрочный или подстрочный фрагмент для b
-            top_bord, bot_bord = self.neigh_borders(line_of_b)
-            if a.distance_to_y(top_bord) >= SegAnalyzer.MIN_OUTSTR_DIST and \
-                    a.distance_to_y(bot_bord) >= SegAnalyzer.MIN_OUTSTR_DIST and \
-                    (a.center().y <= b.bottom() or a.center().y >= b.top()):  # a -- надстрочный или подстрочный фрагм.
-                return True
-
-            return False
-
-        # если и a, и b стоят в какой-то линии, то фиг с ним, все объединяем при выполнении остальных критериев
-        # (возможно, имеем подстрочный символ для "ц" или "щ")
-        if line_of_a != -1 and line_of_b != -1:
-            return is_outstr(a, b, line_of_a) or is_outstr(b, a, line_of_b)
-
-        instr, outstr = (a, b) if line_of_a != -1 else (b, a)
-        return is_outstr(instr, outstr, max(line_of_a, line_of_b))
-
-    def is_above_line(self, line_i: int, zone: Rect) -> bool:
-        # прямоугольник zone лежит целиком над строкой слов line_i, в междустрочном интервале над ней
-        top_border = self.strings_on_doc[line_i][0]
-        bot_border_prev = 0 if line_i == 0 else self.strings_on_doc[line_i - 1][1]
-        return bot_border_prev <= zone.top() and zone.bottom() <= top_border
-
-    def is_under_line(self, line_i: int, zone: Rect) -> bool:
-        # прямоугольник zone лежит целиком под строкой слов line_i, в междустрочном интервале под ней
-        bot_border = self.strings_on_doc[line_i][1]
-        top_border_next = 999999 if line_i == len(self.strings_on_doc) - 1 \
-            else self.strings_on_doc[line_i + 1][0]
-
-        return bot_border <= zone.top() and zone.bottom() <= top_border_next
-
-    def neigh_borders(self, line_i: int) -> Tuple[int, int]:
-        top_bord = 0 if line_i == 0 else self.strings_on_doc[line_i - 1][1]  # нижняя граница строки выше
-        bot_bord = 999999 if line_i == len(self.strings_on_doc) - 1 \
-            else self.strings_on_doc[line_i + 1][0]
-        return top_bord, bot_bord
-
-    def in_the_same_line(self, a: Rect, b: Rect) -> bool:
-        la, lb = self.find_line(a), self.find_line(b)
-        return la == lb and la != -1
-
-    def find_line(self, segm: Rect) -> int:
-        # находит линию, в границах которой лежит центр сегмента segm
-        for i in range(len(self.strings_on_doc)):
-            t, b = self.strings_on_doc[i]
-            proj = len_of_intersection(t, b, segm.top(), segm.bottom())
-            if proj >= 0.5 * segm.h() / (1 + SegAnalyzer.MAX_OUTSTR_PROP):  # хотя бы 50% строчной части символа лежит в
-                # линии
-                return i
-
-        return -1
-
     def trivial_parse(self) -> List[Rect]:
-        # выделяет в документе слова тривиальным образом, подсчитывая суммы пикселов по строкам и по вертикалям строк
+        # выделяет в документе слова тривиальным образом, подсчитывая суммы пикселов по строкам и по вертикалям строк,
+        # затем уточняет границы
         res = []
         for i in range(len(self.strings_on_doc)):
             topy, boty = self.strings_on_doc[i]
-            for word in self.words_in_strings[i]:
-                wx_left, wx_right = word
-                res.append(Rect(Point(wx_left, topy), Point(wx_right, boty)))
+            words_in_line = []
+            for wx_left, wx_right in self.words_in_strings[i]:
+                zone = Rect(Point(wx_left, topy), Point(wx_right, boty))
+                zone = self.specify_borders(zone, step=1)
+                words_in_line.append(zone)
+
+            SegAnalyzer._unite_words(self.words_in_strings[i], self.params, boty - topy, words_in_line)
+            res += words_in_line
+
+        res = postprocess_segmentation(
+            res,
+            criterion=lambda a, b, sens=self.params[MIN_WORDS_DIST]:
+            SegAnalyzer.unite_segments(a, b, sens, res)
+        )
+        if len(res) > 1:
+            res = self._check_line_errors(res)
 
         return res
 
-    def find_word(self, line_i, zone: Rect) -> int:
-        xc = zone.center().x
-        for i in range(len(self.words_in_strings[line_i])):
-            l, r = self.words_in_strings[line_i][i]
-            if l <= xc <= r:
+    def _check_line_errors(self, zones: List[Rect]) -> List[Rect]:
+        # возможно, мы некорректно выделили границы строк, и два слова в соседних строках было выделено как одно
+        res = []
+        for zone in zones:
+            zone_words = SegAnalyzer(self.img[zone.top(): zone.bottom() + 1, zone.left(): zone.right() + 1],
+                                     self.params).trivial_parse()
+            if len(zone_words) > 1:
+                # мы нашли больше одного слова в сегменте => была ошибка разметки линий
+                for r in zone_words:
+                    r.move(zone.left(), zone.top())
+                res += zone_words
+            else:
+                res.append(zone)
+        return res
+
+    @staticmethod
+    def find_word(words: List[Rect], zone: Rect, iou_thresh: float = 0.5) -> int:
+        for i in range(len(words)):
+            if words[i].iou_val(zone) >= iou_thresh:
                 return i
 
         return -1
 
-    def are_near_words(self, a: Rect, b: Rect) -> bool:
-        # a и b в одной строке. Метод проверяет, что они являются одним словом
-        # TODO: мб проверять, что они соседние слова?..
-        line = self.find_line(a)
-        wa, wb = self.find_word(line, a), self.find_word(line, b)
-        return wa == wb and wa != -1
+    def specify_borders(self, zone: Rect, step: int = 5) -> Rect:
+        while True:
+            t = self.__specify(self.img[:, zone.left(): zone.right()], zone.top(), out_is_upper=True, step=step)
+            b = self.__specify(self.img[:, zone.left(): zone.right()], zone.bottom(), out_is_upper=False, step=step)
+            l = self.__specify(self.img[t: b].transpose(), zone.left(), out_is_upper=True, step=step)
+            r = self.__specify(self.img[t: b].transpose(), zone.right(), out_is_upper=False, step=step)
+            new = Rect(Point(l, t), Point(r, b))
+
+            if new == zone:
+                break
+            else:
+                zone = new
+        return new
+
+    @staticmethod
+    def __specify(arr_norm: np.ndarray, tbord: int, out_is_upper: bool, step: int = 1) -> int:
+        # arr_norm -- нормализованная матрица: она повернута так, что интересующая нас ось -- вертикальная
+
+        def bound_tbord(tbord) -> int:
+            if tbord < 0:
+                tbord = 0
+            elif tbord >= arr_norm.shape[0]:
+                tbord = arr_norm.shape[0] - 1
+
+            return tbord
+
+        tbord = bound_tbord(tbord)
+
+        while np.count_nonzero(arr_norm[tbord]):
+            # есть пересечение с линией на границе зоны, значит границу надо отодвинуть наружу
+            tbord -= step if out_is_upper else -step
+            if tbord < 0 or tbord >= arr_norm.shape[0]:
+                tbord = bound_tbord(tbord)
+                break
+
+        while not np.count_nonzero(arr_norm[tbord]) and tbord not in (0, arr_norm.shape[0]):
+            # нет пересечения с линией символа => границу надо сузить
+            tbord += 1 if out_is_upper else -1
+            if tbord < 0 or tbord >= arr_norm.shape[0]:
+                tbord = bound_tbord(tbord)
+                break
+
+        return tbord
+
+    @staticmethod
+    def _is_diacritic(_prev_word: Rect, _segment: Rect, sens: Union[int, float]) -> bool:
+        # _segment -- диакритический знак _prev_word
+        return _segment.bottom() <= _prev_word.center().y and _segment.intersects_x(_prev_word) and \
+               _segment.h() * 3 < _prev_word.h() and Rect.distance(_prev_word, _segment) <= sens
+
+    @staticmethod
+    def _is_point_comma(_prev_word: Rect, _segment: Rect) -> bool:
+        # _segment -- точка или запятая: его площадь намного меньше предыдущего слова и он лежит правее этого слова
+        epsilon = min(_prev_word.h() / 4, _prev_word.w() / 8)
+        # epsilon: строго говоря, бывают такие ситуации, когда точка или запятая налезает на предыдущее слово,
+        # epsilon -- максимальный допустимый сдвиг пунктуации влево
+        return _segment.area() < 0.05 * _prev_word.area() and _segment.left() >= _prev_word.right() - epsilon
+
+    @staticmethod
+    def _is_dash(_prev_word: Rect, _segment: Rect) -> bool:
+        # _segment -- тире или дефис
+        return _prev_word.intersects_y(_segment) and _segment.is_on_right(_prev_word) \
+               and _segment.w() > _segment.h() and _segment.h() * 3 < _prev_word.h()
+
+    @staticmethod
+    def is_punctuation(prev_word: Rect, segment: Rect) -> bool:
+        return SegAnalyzer._is_point_comma(prev_word, segment) or SegAnalyzer._is_dash(prev_word, segment)
