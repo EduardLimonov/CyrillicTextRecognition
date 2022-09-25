@@ -53,6 +53,8 @@ class PicHandler:
                 self.img = image.copy()
             else:
                 self.img = image
+            if is_colored:
+                self.img = self.make_black_and_white(self.img)
 
         elif isinstance(image, type('')):
             t = cv2.imread(image)
@@ -139,13 +141,13 @@ class PicHandler:
         return mat * 255
 
     def draw_rect(self, rect: Rect, color: int = 0) -> None:
-        left, right, top, bottom = rect.left(), rect.right() - 1, rect.top(), rect.bottom() - 1
+        left, right, top, bottom = rect.left(), rect.right(), rect.top(), rect.bottom()
         for x_static in (left, right):
             for y_dyn in range(top, bottom + 1):
                 self.img[y_dyn, x_static] = color
 
         for y_static in (top, bottom):
-            for x_dyn in range(left, right):
+            for x_dyn in range(left, right + 1):
                 self.img[y_static, x_dyn] = color
 
     def __rebin(self) -> None:
