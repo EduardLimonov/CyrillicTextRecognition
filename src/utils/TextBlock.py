@@ -1,7 +1,8 @@
-from utils.geometry import Point, Rect
+from utils.geometry import Rect
 import numpy as np
 from image_preprocessing.PicHandler import view_image
 from image_preprocessing.PicHandler import PicHandler
+
 
 class TextBlock:
     zone: Rect  # расположение данного слова (слитного сочетания символов) на изображении

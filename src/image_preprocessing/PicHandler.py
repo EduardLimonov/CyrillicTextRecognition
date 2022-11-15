@@ -53,6 +53,8 @@ class PicHandler:
                 self.img = image.copy()
             else:
                 self.img = image
+            if is_colored:
+                self.img = self.make_black_and_white(self.img)
 
         elif isinstance(image, type('')):
             t = cv2.imread(image)
@@ -65,6 +67,9 @@ class PicHandler:
                 t = self.make_black_and_white(t)
 
             self.img = t
+
+    def get_image(self) -> np.ndarray:
+        return self.img
 
     @staticmethod
     def make_black_and_white(img: np.ndarray) -> np.ndarray:
@@ -85,7 +90,7 @@ class PicHandler:
         elif filter_type == MEDIAN_FILTER:
             self.img = apply_median(self.img, filter_size)
 
-    def apply_fixed_bin_filter(self, thresh: int = 220) -> None:
+    def apply_global_bin_filter(self, thresh: int = 220) -> None:
         # во все пикселы, значения которых больше порога thresh, устанавливаются значения 255
         # во все остальные -- 0
         mask = self.img >= thresh
@@ -126,7 +131,7 @@ class PicHandler:
         return res
 
     def make_zero_one(self) -> np.ndarray:
-        # возвращает матрицу для бинаризованного изображения: 1, если пиксел не закрашен, иначе 0
+        # возвращает матрицу для бинарного изображения: 1, если пиксел не закрашен, иначе 0
         # Не вызывайте этот метод, если изображение не бинаризовано
         return (self.img == 0).astype(np.uint8)
 
@@ -136,17 +141,29 @@ class PicHandler:
         return mat * 255
 
     def draw_rect(self, rect: Rect, color: int = 0) -> None:
-        left, right, top, bottom = rect.left(), rect.right() - 1, rect.top(), rect.bottom() - 1
+        left, right, top, bottom = rect.left(), rect.right(), rect.top(), rect.bottom()
         for x_static in (left, right):
             for y_dyn in range(top, bottom + 1):
                 self.img[y_dyn, x_static] = color
 
         for y_static in (top, bottom):
-            for x_dyn in range(left, right):
+            for x_dyn in range(left, right + 1):
                 self.img[y_static, x_dyn] = color
+
+    def __rebin(self) -> None:
+        self.apply_global_bin_filter()
 
     def resize(self, shape: Tuple[int, int]) -> None:
         self.img = resize(self.img, shape, preserve_range=True)
+        self.__rebin()
+
+    def rescale(self, scale: float) -> None:
+        self.img = rescale(self.img, scale)
+        self.__rebin()
+
+    def exec_pipeline(self, pipeline: Callable, make_copy: bool=False, **params) -> PicHandler:
+        pipeline(self, **params)
+        return self
 
 
 if __name__ == '__main__':

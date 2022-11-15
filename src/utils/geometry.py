@@ -4,20 +4,21 @@ from math import sqrt
 
 
 def len_of_intersection(a1: int, a2: int, b1: int, b2: int) -> int:
-    # длина пересечения двух отрезков на прямой
+    '''
+    длина пересечения двух отрезков на прямой
+
+    :param a1: начало отрезка a
+    :param a2: конец отрезка a
+    :param b1: начало отрезка b
+    :param b2: конец отрезка b
+    :return: длина пересечения отрезков a, b
+    '''
 
     if not(b1 <= a1 < b2 or b1 < a2 <= b2 or a1 <= b1 < a2 or a1 < b2 <= a2):
         # пересечения нет или это одна точка
         return 0
 
     start, stop = max(a1, b1), min(a2, b2)
-    # найдем границы наибольшего отрезка, лежащего в пересечении a и b
-    for b in (a1, a2, b1, b2):
-        if a1 <= b <= a2 and b1 <= b <= b2:
-            if b < start:
-                start = b
-            if b > stop:
-                stop = b
     return stop - start
 
 
@@ -46,6 +47,12 @@ class Point:
     def __sub__(self, other: Point) -> Point:
         return Point(self.x - other.x, self.y - other.y)
 
+    def __mul__(self, k: float) -> Point:
+        return Point(int(self.x * k), int(self.y * k))
+
+    def __eq__(self, other: Point) -> bool:
+        return self.x == other.x and self.y == other.y
+
     @staticmethod
     def distance(a: Point, b: Point) -> float:
         dp = a - b
@@ -66,6 +73,9 @@ class Rect:
         return self.top_left.x <= item.x <= self.bottom_right.x and \
                self.top_left.y <= item.y <= self.bottom_right.y
 
+    def __eq__(self, other: Rect) -> bool:
+        return self.top_left == other.top_left and self.bottom_right == other.bottom_right
+
     def shape(self) -> Tuple[int, int]:
         return self.w(), self.h()
 
@@ -80,15 +90,7 @@ class Rect:
 
     @staticmethod
     def intersects(a: Rect, b: Rect) -> bool:
-        return a.top_left in b or \
-               a.bottom_right in b or \
-               Point(a.top_left.x, a.bottom_right.y) in b or \
-               Point(a.bottom_right.x, a.top_left.y) in b \
-               or \
-               b.top_left in a or \
-               b.bottom_right in a or \
-               Point(b.top_left.x, b.bottom_right.y) in a or \
-               Point(b.bottom_right.x, b.top_left.y) in a
+        return a.intersects_x(b) and a.intersects_y(b)
 
     @staticmethod
     def distance(a: Rect, b: Rect) -> float:
@@ -131,7 +133,7 @@ class Rect:
         return self.bottom_right.y
 
     def is_on_left(self, other: Rect) -> bool:
-        return self.right() >= other.left()
+        return self.right() <= other.left()
 
     def is_on_right(self, other: Rect) -> bool:
         return other.is_on_left(self)
@@ -160,15 +162,33 @@ class Rect:
     def distance_to_y(self, y: int) -> int:
         return min(abs(self.top() - y), abs(self.bottom() - y))
 
+    def multiply_coordinates(self, px: float, py: float) -> None:
+        self.top_left = Point(int(self.left() * px), int(self.top() * py))
+        self.bottom_right = Point(int(self.right() * px), int(self.bottom() * py))
+
+    def move(self, dx: int, dy: int) -> None:
+        self.top_left.x += dx
+        self.top_left.y += dy
+        self.bottom_right.x += dx
+        self.bottom_right.y += dy
+
+    def limit_bottom_right(self, max_x: int, max_y: int) -> None:
+        self.bottom_right.x = min(max_x, self.right())
+        self.bottom_right.y = min(max_y, self.bottom())
+
     def scale_x(self, scale_k: float) -> None:
         dx = int(self.w() * (1 - scale_k) / 2)
-        self.top_left.x += dx
-        self.bottom_right.x -= dx
+        self.top_left.x -= dx
+        self.bottom_right.x += dx
 
     def scale_y(self, scale_k: float) -> None:
         dy = int(self.h() * (1 - scale_k) / 2)
         self.top_left.y -= dy
         self.bottom_right.y += dy
+
+    def scale_xy(self, scale_x: float, scale_y: float) -> None:
+        self.scale_x(scale_x)
+        self.scale_y(scale_y)
 
     def scale(self, scale_k: float) -> None:
         self.scale_x(scale_k)
@@ -199,6 +219,14 @@ class Rect:
 
         return res
 
+    def iou_val(self, other: Rect) -> float:
+        if not Rect.intersects(self, other):
+            return 0
+        elif self == other:
+            return True
+
+        intersection = self.intersection(other)
+        return intersection.area() / (self.area() + other.area() - intersection.area())
 
 
 if __name__ == '__main__':

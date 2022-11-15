@@ -9,13 +9,15 @@ MIN_LINE_HEIGHT = 'MIN_LINE_HEIGHT'
 MIN_WORDS_DIST = 'MIN_WORDS_DIST'
 MIN_HOR_SUM = 'MIN_HOR_SUM'
 MIN_VERT_SUM = 'MIN_VERT_SUM'
+MAX_LOCAL_SCOPE = 'MAX_LOCAL_SCOPE'
 
 DEFAULT_PARAMS = {
     MIN_LINE_DIST: 1,
     MIN_LINE_HEIGHT: 12,
     MIN_WORDS_DIST: 8,
     MIN_HOR_SUM: 10,
-    MIN_VERT_SUM: 3
+    MIN_VERT_SUM: 3,
+    MAX_LOCAL_SCOPE: 15
 }
 
 
@@ -100,7 +102,7 @@ class SegAnalyzer:
                     ti = words[i]
                     tj = words[j]
 
-                    if SegAnalyzer.unite_segments(ti, tj, params[MIN_WORDS_DIST], words):
+                    if SegAnalyzer.unite_segments(ti, tj, params[MIN_WORDS_DIST], dist=Rect.distance(ti, tj)):
                         # Rect.distance(ti, tj) <= params[MIN_WORDS_DIST]:
                         # объединяем области
                         words[i] = words[i].union(words[j])
@@ -159,21 +161,17 @@ class SegAnalyzer:
                 return
 
     @staticmethod
-    def unite_segments(a: Rect, b: Rect, sens: float, words: List[Rect]) -> bool:
+    def unite_segments(a: Rect, b: Rect, sens: float, dist: float = None) -> bool:
         # следует ли объединять два фрагмента a, b в один (слитны ли они)
         if SegAnalyzer._is_diacritic(a, b, sens * 3) or SegAnalyzer._is_diacritic(b, a, sens * 3):
             return True
         elif SegAnalyzer.is_punctuation(a, b) or SegAnalyzer.is_punctuation(b, a):
             return False
-        elif Rect.distance(a, b) <= sens:
+        elif dist <= sens:
             # фрагменты близко находятся
             return True
         else:
-            wa, wb = SegAnalyzer.find_word(words, a), SegAnalyzer.find_word(words, b)
-            if wa == wb and wa != -1:
-                return True
-
-        return False
+            return False
 
     def trivial_parse(self) -> List[Rect]:
         # выделяет в документе слова тривиальным образом, подсчитывая суммы пикселов по строкам и по вертикалям строк,
@@ -187,13 +185,14 @@ class SegAnalyzer:
                 zone = self.specify_borders(zone, step=1)
                 words_in_line.append(zone)
 
-            SegAnalyzer._unite_words(self.words_in_strings[i], self.params, boty - topy, words_in_line)
+            #SegAnalyzer._unite_words(self.words_in_strings[i], self.params, boty - topy, words_in_line)
             res += words_in_line
 
         res = postprocess_segmentation(
             res,
-            criterion=lambda a, b, sens=self.params[MIN_WORDS_DIST]:
-            SegAnalyzer.unite_segments(a, b, sens, res)
+            criterion=lambda a, b, dist, sens=self.params[MIN_WORDS_DIST]:
+            SegAnalyzer.unite_segments(a, b, sens, dist=dist),
+            local_scope_sens=max(self.params.values())
         )
         if len(res) > 1:
             res = self._check_line_errors(res)
@@ -284,8 +283,9 @@ class SegAnalyzer:
     @staticmethod
     def _is_dash(_prev_word: Rect, _segment: Rect) -> bool:
         # _segment -- тире или дефис
-        return _prev_word.intersects_y(_segment) and _segment.is_on_right(_prev_word) \
-               and _segment.w() > _segment.h() and _segment.h() * 3 < _prev_word.h()
+        return _prev_word.intersects_y(_segment) and _segment.w() > _segment.h() and \
+               _segment.h() * 3 < _prev_word.h() and \
+               (_segment.is_on_right(_prev_word) or _segment.is_on_left(_prev_word))
 
     @staticmethod
     def is_punctuation(prev_word: Rect, segment: Rect) -> bool:

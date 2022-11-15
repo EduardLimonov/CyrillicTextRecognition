@@ -8,10 +8,13 @@ from itertools import product
 from utils.algs import get_connect_components, postprocess_segmentation
 from utils.geometry import Point, Rect
 from SegAnalyzer import SegAnalyzer
-from PicHandler import PicHandler
+from image_preprocessing.PicHandler import PicHandler
 
 
 class Segmentator:
+    """
+    Поиск слов путем поиска компонент связности на графе закрашенных пикселей
+    """
     @staticmethod
     def get_pixel_area(x, y, w, h, sensitivity: int = 1):
         diap = range(-sensitivity, sensitivity + 1)
@@ -53,7 +56,7 @@ class Segmentator:
         components_pointed: List[Set[Tuple[int, int]]] = get_connect_components(adj_lists)
 
         zones = [Segmentator.find_rect(component) for component in components_pointed]
-        zones = Segmentator.unite_components(zones, sensitivity, img, params)  # объединенные компоненты связности
+        zones = Segmentator._unite_components(zones, sensitivity, img, params)  # объединенные компоненты связности
 
         res = []
         for i in range(len(zones)):
@@ -64,84 +67,16 @@ class Segmentator:
         return res
 
     @staticmethod
-    def unite_components(zones: List[Rect], sensitivity: float, doc: np.ndarray, params: Optional[Dict]) -> List[Rect]:
+    def _unite_components(zones: List[Rect], sensitivity: float, doc: np.ndarray, params: Optional[Dict]) -> List[Rect]:
         analyzer = SegAnalyzer(doc, params)
 
-        def check_unite_rects(a: Rect, b: Rect) -> bool:
-            return analyzer.unite_segments(a, b, sensitivity, zones)
+        def check_unite_rects(a: Rect, b: Rect, dist: float) -> bool:
+            return analyzer.unite_segments(a, b, sensitivity, dist)
 
-        return postprocess_segmentation(zones, check_unite_rects)
+        return postprocess_segmentation(zones, check_unite_rects, max(params.values()))
 
     @staticmethod
     def parse_image_trivial(img: np.ndarray, **params) -> List[TextBlock]:
         sa = SegAnalyzer(img, params)
         zones = sa.trivial_parse()
         return [TextBlock(zone, PicHandler.crop(img, zone)) for zone in zones]
-
-    @staticmethod
-    def parse_hybrid(img: np.ndarray, sensitivity: float, threshold: float) -> List[TextBlock]:
-
-        near = lambda a, b: 0 if not Rect.intersects(a, b) \
-            else a.intersection(b).area() / min(a.area(), b.area())
-
-        trivial_zones = SegAnalyzer(img).trivial_parse()
-        blocks = Segmentator.parse_image(img, int(sensitivity))
-        zones = [tb.zone for tb in blocks]
-
-        res = []
-        for tzone in trivial_zones:
-            rs = [z for z in zones if near(z, tzone) >= threshold]
-            if len(rs):
-                res.append(Rect.union_of_rects(rs))
-
-        out_of_res = []
-        for z in zones:
-            not_intersects = True
-            for r in res:
-                if z.intersects(z, r):
-                    not_intersects = False
-            if not_intersects:
-                out_of_res.append(z)
-
-        res += out_of_res
-
-        return [TextBlock(zone, PicHandler.crop(img, zone)) for zone in res]
-
-
-if __name__ == "__main__":
-    import time
-    from PicHandler import *
-
-    f1_scan = '../test/test1.png'
-    f1_photo = '../test/hand1.jpg'
-    f2_scan = '../test/handwritten2.jpg'
-    f2_photo = '../test/hand2.jpg'
-
-    ph = PicHandler(f1_scan)
-    h, w = ph.img.shape
-    new_shape = h // 2, w // 2
-    ph.resize(new_shape)
-
-    ph.apply_adaptive_bin_filter(w=0.15)
-    ph.apply_filter(GAUSSIAN_FILTER, 3)
-    ph.apply_adaptive_bin_filter(w=0.15)
-    ph.show()
-
-    #tbs = Segmentator.parse_hybrid(ph.make_zero_one(), 9, 0.01)
-    #tbs = Segmentator.parse_image(ph.make_zero_one(), 9)
-    #tbs = Segmentator.parse_image_trivial(ph.make_zero_one())
-
-    start_time = time.time()
-
-    #ph = PicHandler(fname)
-    #ph.apply_filter(MEDIAN_FILTER, 5)
-    #ph.apply_adaptive_bin_filter()
-
-    #tbs = Segmentator.parse_image_trivial(ph.make_zero_one())
-    tbs = Segmentator.parse_image(ph.make_zero_one(), 10)
-    print(time.time() - start_time)
-    p = PicHandler(ph.img, make_copy=True)
-    for tb in tbs:
-        p.draw_rect(tb.zone, 120)
-    p.show()
-
